@@ -264,9 +264,123 @@ interface DraggableGroupProps {
   onDelete: (groupId: string) => void;
 }
 
+// Reusable swipe-to-delete row
+function SwipeableRow({
+  onDelete,
+  children,
+  className = '',
+  disabled = false,
+}: {
+  onDelete: () => void;
+  children: React.ReactNode;
+  className?: string;
+  disabled?: boolean;
+}) {
+  const [offset, setOffset] = useState(0);
+  const [isTouching, setIsTouching] = useState(false);
+  const startXRef = useRef(0);
+  const startYRef = useRef(0);
+  const startOffsetRef = useRef(0);
+  const directionRef = useRef<'horizontal' | 'vertical' | null>(null);
+  const lastXRef = useRef(0);
+  const lastTRef = useRef(0);
+  const velocityRef = useRef(0);
+  const SNAP_WIDTH = 80;
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (disabled) return;
+    const t = e.touches[0];
+    startXRef.current = t.clientX;
+    startYRef.current = t.clientY;
+    startOffsetRef.current = offset;
+    directionRef.current = null;
+    lastXRef.current = t.clientX;
+    lastTRef.current = Date.now();
+    velocityRef.current = 0;
+    setIsTouching(true);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (disabled) return;
+    const t = e.touches[0];
+    const dx = t.clientX - startXRef.current;
+    const dy = t.clientY - startYRef.current;
+
+    if (directionRef.current === null) {
+      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+        directionRef.current = Math.abs(dx) > Math.abs(dy) ? 'horizontal' : 'vertical';
+      }
+      return;
+    }
+    if (directionRef.current === 'vertical') return;
+
+    e.stopPropagation();
+
+    const now = Date.now();
+    const dt = now - lastTRef.current;
+    if (dt > 0) velocityRef.current = (t.clientX - lastXRef.current) / dt;
+    lastXRef.current = t.clientX;
+    lastTRef.current = now;
+
+    const raw = startOffsetRef.current + dx;
+    setOffset(Math.min(0, Math.max(-SNAP_WIDTH, raw)));
+  };
+
+  const handleTouchEnd = () => {
+    if (disabled) return;
+    setIsTouching(false);
+    if (offset < -SNAP_WIDTH / 2 || velocityRef.current < -0.4) {
+      setOffset(-SNAP_WIDTH);
+    } else {
+      setOffset(0);
+    }
+  };
+
+  const handleContentClick = (e: React.MouseEvent) => {
+    if (offset !== 0) {
+      e.stopPropagation();
+      e.preventDefault();
+      setOffset(0);
+    }
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setOffset(0);
+    onDelete();
+  };
+
+  return (
+    <div className={`relative overflow-hidden ${className}`}>
+      {/* Delete button — only visible behind sliding content */}
+      <div
+        className="absolute inset-y-0 right-0 flex items-center justify-end bg-[#FF3B30] px-5"
+        style={{ width: SNAP_WIDTH }}
+        onClick={handleDeleteClick}
+      >
+        <span className="text-[14px] font-semibold text-white">Удалить</span>
+      </div>
+
+      {/* Sliding content */}
+      <div
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onClick={handleContentClick}
+        style={{
+          transform: `translateX(${offset}px)`,
+          transition: isTouching ? 'none' : 'transform 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+          willChange: 'transform',
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function DraggableGroup({ group, index, isSelected, moveGroup, onSelectGroup, onDelete }: DraggableGroupProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
 
   const [{ isDragging }, drag] = useDrag({
     type: 'group',
@@ -292,91 +406,33 @@ function DraggableGroup({ group, index, isSelected, moveGroup, onSelectGroup, on
   drag(drop(ref));
 
   return (
-    <div className="relative overflow-hidden border-b border-[rgba(13,45,94,0.08)]">
-      {/* Swipe delete background */}
-      <div 
-        className="absolute inset-0 flex items-center justify-end bg-[#FF4D4F] px-4"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (window.confirm(`Удалить группу "${group.name}"?`)) {
-            onDelete(group.id);
-          }
-        }}
-      >
-        <span className="text-[15px] font-semibold text-white">Удалить</span>
-      </div>
-      
-      {/* Main group content */}
+    <SwipeableRow
+      onDelete={() => {
+        if (window.confirm(`Удалить группу "${group.name}"?`)) {
+          onDelete(group.id);
+        }
+      }}
+      className="border-b border-[rgba(13,45,94,0.08)]"
+    >
       <div
-        ref={contentRef}
-        className={`relative flex items-center gap-3 px-4 py-3 cursor-pointer transition-all bg-white ${
-          isDragging ? 'opacity-50' : ''
-        } ${
-          isOver
-            ? 'bg-[rgba(0,127,255,0.08)] border-[#007FFF]'
-            : isSelected
-              ? 'bg-[#EEF6FF]'
-              : 'hover:bg-[rgba(13,45,94,0.04)]'
+        ref={ref}
+        className={`flex items-center gap-3 px-4 py-3 cursor-pointer ${
+          isDragging
+            ? 'bg-[rgba(13,45,94,0.04)]'
+            : isOver
+              ? 'bg-[#EDF5FF]'
+              : isSelected
+                ? 'bg-[#EEF6FF]'
+                : 'bg-white hover:bg-[rgba(13,45,94,0.02)]'
         }`}
-        style={{
-          touchAction: 'pan-y',
-        }}
-        onTouchStart={(e) => {
-          const touch = e.touches[0];
-          const target = contentRef.current;
-          if (!target) return;
-          
-          const startX = touch.clientX;
-          const startTime = Date.now();
-          
-          const handleMove = (moveEvent: TouchEvent) => {
-            const moveTouch = moveEvent.touches[0];
-            const deltaX = moveTouch.clientX - startX;
-            
-            if (deltaX < 0) {
-              const clampedDelta = Math.max(deltaX, -80);
-              target.style.transform = `translateX(${clampedDelta}px)`;
-            }
-          };
-          
-          const handleEnd = (endEvent: TouchEvent) => {
-            const endTouch = endEvent.changedTouches[0];
-            const deltaX = endTouch.clientX - startX;
-            const deltaTime = Date.now() - startTime;
-            const velocity = Math.abs(deltaX) / deltaTime;
-            
-            if (deltaX < -60 || velocity > 0.5) {
-              target.style.transform = 'translateX(-80px)';
-            } else {
-              target.style.transform = 'translateX(0)';
-            }
-            
-            document.removeEventListener('touchmove', handleMove);
-            document.removeEventListener('touchend', handleEnd);
-          };
-          
-          document.addEventListener('touchmove', handleMove);
-          document.addEventListener('touchend', handleEnd);
-        }}
-        onClick={(e) => {
-          const target = contentRef.current;
-          if (!target) return;
-          
-          const transform = target.style.transform;
-          
-          if (transform && transform.includes('-80px')) {
-            target.style.transform = 'translateX(0)';
-          } else {
-            onSelectGroup(group.id);
-          }
-        }}
+        onClick={() => onSelectGroup(group.id)}
       >
-        <div ref={ref} className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0">
           <div className="text-[16px] font-medium text-[#222934] truncate">{group.name}</div>
           <div className="text-[12px] text-[rgba(13,45,94,0.56)]">{group.products.length} {positionsForm(group.products.length)}</div>
         </div>
       </div>
-    </div>
+    </SwipeableRow>
   );
 }
 
@@ -2561,71 +2617,12 @@ export default function App() {
                           onClick={() => setSelectedProduct({ product, groupId: group.id })}
                           setDragTooltip={setDragTooltip}
                         >
-                          <div className="relative overflow-hidden">
-                            {/* Swipe delete background */}
-                            <div 
-                              className="absolute inset-0 flex items-center justify-end bg-[#FF4D4F] px-4 cursor-pointer"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (window.confirm(`Удалить товар "${product.name}"?`)) {
-                                  deleteProduct(product.id, group.id);
-                                }
-                              }}
-                            >
-                              <span className="text-[15px] font-semibold text-white">Удалить</span>
-                            </div>
-                            
-                            {/* Main product card */}
-                            <div 
-                              className="relative bg-white px-4 py-4 transition-transform"
-                              style={{
-                                touchAction: 'pan-y',
-                              }}
-                              onTouchStart={(e) => {
-                                const touch = e.touches[0];
-                                const target = e.currentTarget;
-                                const startX = touch.clientX;
-                                const startTime = Date.now();
-                                
-                                const handleMove = (moveEvent: TouchEvent) => {
-                                  const moveTouch = moveEvent.touches[0];
-                                  const deltaX = moveTouch.clientX - startX;
-                                  
-                                  if (deltaX < 0) {
-                                    const clampedDelta = Math.max(deltaX, -80);
-                                    target.style.transform = `translateX(${clampedDelta}px)`;
-                                  }
-                                };
-                                
-                                const handleEnd = (endEvent: TouchEvent) => {
-                                  const endTouch = endEvent.changedTouches[0];
-                                  const deltaX = endTouch.clientX - startX;
-                                  const deltaTime = Date.now() - startTime;
-                                  const velocity = Math.abs(deltaX) / deltaTime;
-                                  
-                                  if (deltaX < -60 || velocity > 0.5) {
-                                    target.style.transform = 'translateX(-80px)';
-                                  } else {
-                                    target.style.transform = 'translateX(0)';
-                                  }
-                                  
-                                  document.removeEventListener('touchmove', handleMove);
-                                  document.removeEventListener('touchend', handleEnd);
-                                };
-                                
-                                document.addEventListener('touchmove', handleMove);
-                                document.addEventListener('touchend', handleEnd);
-                              }}
-                              onClick={(e) => {
-                                const target = e.currentTarget;
-                                const transform = target.style.transform;
-                                
-                                if (transform && transform.includes('-80px')) {
-                                  e.stopPropagation();
-                                  target.style.transform = 'translateX(0)';
-                                }
-                              }}
-                            >
+                          <SwipeableRow onDelete={() => {
+                            if (window.confirm(`Удалить товар "${product.name}"?`)) {
+                              deleteProduct(product.id, group.id);
+                            }
+                          }}>
+                            <div className="bg-white px-4 py-4">
                             <div className="flex gap-3">
                               <div className="w-16 h-16 rounded-lg overflow-hidden bg-[rgba(13,45,94,0.04)] flex-shrink-0 border border-[rgba(13,45,94,0.08)]">
                                 {product.image ? (
@@ -2684,7 +2681,7 @@ export default function App() {
                               </div>
                             </div>
                             </div>
-                          </div>
+                          </SwipeableRow>
                         </DraggableProduct>
                         {productIndex < group.products.length - 1 && (
                           <div className="px-2">
@@ -4541,62 +4538,22 @@ export default function App() {
                     {selectedProductAlternatives.length > 0 && (
                       <div className="space-y-2">
                         {selectedProductAlternatives.map((alt) => (
-                          <div key={alt.id} className="relative overflow-hidden rounded-[12px]">
-                            {/* Swipe delete background */}
-                            <div className="absolute inset-0 flex items-center justify-end bg-[#FF4D4F] px-4">
-                              <span className="text-[15px] font-semibold text-white">Удалить</span>
-                            </div>
-                            
-                            {/* Main item content */}
+                          <SwipeableRow
+                            key={alt.id}
+                            className="rounded-[12px]"
+                            disabled={relatedSectionEditMode === 'alternative'}
+                            onDelete={() => {
+                              if (window.confirm(`Удалить вариант "${alt.name}"?`)) {
+                                unlinkRelatedItem('alternative', alt.id);
+                              }
+                            }}
+                          >
                             <div
-                              className={`relative flex min-h-[56px] items-center gap-3 rounded-[12px] bg-[#F7F9FC] px-4 py-3 transition-transform ${
+                              className={`flex min-h-[56px] items-center gap-3 rounded-[12px] bg-[#F7F9FC] px-4 py-3 ${
                                 relatedSectionEditMode === 'alternative' ? 'pr-3' : ''
                               }`}
-                              style={{
-                                touchAction: 'pan-y',
-                              }}
-                              onTouchStart={(e) => {
-                                const touch = e.touches[0];
-                                const target = e.currentTarget;
-                                const startX = touch.clientX;
-                                const startTime = Date.now();
-                                
-                                const handleMove = (moveEvent: TouchEvent) => {
-                                  const moveTouch = moveEvent.touches[0];
-                                  const deltaX = moveTouch.clientX - startX;
-                                  
-                                  if (deltaX < 0) {
-                                    const clampedDelta = Math.max(deltaX, -80);
-                                    target.style.transform = `translateX(${clampedDelta}px)`;
-                                  }
-                                };
-                                
-                                const handleEnd = (endEvent: TouchEvent) => {
-                                  const endTouch = endEvent.changedTouches[0];
-                                  const deltaX = endTouch.clientX - startX;
-                                  const deltaTime = Date.now() - startTime;
-                                  const velocity = Math.abs(deltaX) / deltaTime;
-                                  
-                                  if (deltaX < -60 || velocity > 0.5) {
-                                    target.style.transform = 'translateX(-80px)';
-                                  } else {
-                                    target.style.transform = 'translateX(0)';
-                                  }
-                                  
-                                  document.removeEventListener('touchmove', handleMove);
-                                  document.removeEventListener('touchend', handleEnd);
-                                };
-                                
-                                document.addEventListener('touchmove', handleMove);
-                                document.addEventListener('touchend', handleEnd);
-                              }}
-                              onClick={(e) => {
-                                const target = e.currentTarget;
-                                const transform = target.style.transform;
-                                
-                                if (transform && transform.includes('-80px')) {
-                                  target.style.transform = 'translateX(0)';
-                                } else if (relatedSectionEditMode !== 'alternative') {
+                              onClick={() => {
+                                if (relatedSectionEditMode !== 'alternative') {
                                   openRelatedItemEditor('alternative', alt);
                                 }
                               }}
@@ -4623,7 +4580,7 @@ export default function App() {
                                 </button>
                               )}
                             </div>
-                          </div>
+                          </SwipeableRow>
                         ))}
                       </div>
                     )}
@@ -4658,62 +4615,22 @@ export default function App() {
                     {selectedProductAddons.length > 0 && (
                       <div className="space-y-2">
                         {selectedProductAddons.map((addon) => (
-                          <div key={addon.id} className="relative overflow-hidden rounded-[12px]">
-                            {/* Swipe delete background */}
-                            <div className="absolute inset-0 flex items-center justify-end bg-[#FF4D4F] px-4">
-                              <span className="text-[15px] font-semibold text-white">Удалить</span>
-                            </div>
-                            
-                            {/* Main item content */}
+                          <SwipeableRow
+                            key={addon.id}
+                            className="rounded-[12px]"
+                            disabled={relatedSectionEditMode === 'addon'}
+                            onDelete={() => {
+                              if (window.confirm(`Удалить дополнение "${addon.name}"?`)) {
+                                unlinkRelatedItem('addon', addon.id);
+                              }
+                            }}
+                          >
                             <div
-                              className={`relative flex min-h-[56px] items-center gap-3 rounded-[12px] bg-[#F7F9FC] px-4 py-3 transition-transform ${
+                              className={`flex min-h-[56px] items-center gap-3 rounded-[12px] bg-[#F7F9FC] px-4 py-3 ${
                                 relatedSectionEditMode === 'addon' ? 'pr-3' : ''
                               }`}
-                              style={{
-                                touchAction: 'pan-y',
-                              }}
-                              onTouchStart={(e) => {
-                                const touch = e.touches[0];
-                                const target = e.currentTarget;
-                                const startX = touch.clientX;
-                                const startTime = Date.now();
-                                
-                                const handleMove = (moveEvent: TouchEvent) => {
-                                  const moveTouch = moveEvent.touches[0];
-                                  const deltaX = moveTouch.clientX - startX;
-                                  
-                                  if (deltaX < 0) {
-                                    const clampedDelta = Math.max(deltaX, -80);
-                                    target.style.transform = `translateX(${clampedDelta}px)`;
-                                  }
-                                };
-                                
-                                const handleEnd = (endEvent: TouchEvent) => {
-                                  const endTouch = endEvent.changedTouches[0];
-                                  const deltaX = endTouch.clientX - startX;
-                                  const deltaTime = Date.now() - startTime;
-                                  const velocity = Math.abs(deltaX) / deltaTime;
-                                  
-                                  if (deltaX < -60 || velocity > 0.5) {
-                                    target.style.transform = 'translateX(-80px)';
-                                  } else {
-                                    target.style.transform = 'translateX(0)';
-                                  }
-                                  
-                                  document.removeEventListener('touchmove', handleMove);
-                                  document.removeEventListener('touchend', handleEnd);
-                                };
-                                
-                                document.addEventListener('touchmove', handleMove);
-                                document.addEventListener('touchend', handleEnd);
-                              }}
-                              onClick={(e) => {
-                                const target = e.currentTarget;
-                                const transform = target.style.transform;
-                                
-                                if (transform && transform.includes('-80px')) {
-                                  target.style.transform = 'translateX(0)';
-                                } else if (relatedSectionEditMode !== 'addon') {
+                              onClick={() => {
+                                if (relatedSectionEditMode !== 'addon') {
                                   openRelatedItemEditor('addon', addon);
                                 }
                               }}
@@ -4740,7 +4657,7 @@ export default function App() {
                                 </button>
                               )}
                             </div>
-                          </div>
+                          </SwipeableRow>
                         ))}
                       </div>
                     )}
